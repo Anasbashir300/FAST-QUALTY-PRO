@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "name": "One Click Dub - RunPod Serverless",
+  "description": "AI video dubbing via RunPod Serverless: Fast Edge, Quality OmniVoice, Pro local Fish Audio S2-Pro.",
+  "version": "2.0.0",
+  "action": {
+    "default_title": "One Click Dub",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://translate.googleapis.com/*",
+    "<all_urls>",
+    "http://127.0.0.1:3000/*",
+    "http://localhost:3000/*",
+    "https://dev.microsofttranslator.com/*",
+    "https://*.tts.speech.microsoft.com/*",
+    "https://api.runpod.ai/*",
+    "https://one-click-dub-fast-server.onrender.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "ocd-speed-reset.js",
+        "content.js",
+        "sidebar.js",
+        "custom-dub-bridge.js"
+      ],
+      "css": [
+        "content.css",
+        "sidebar.css"
+      ],
+      "run_at": "document_idle",
+      "exclude_matches": [
+        "*://*.google.com/recaptcha/*",
+        "*://*.gstatic.com/*",
+        "*://*.googleusercontent.com/*",
+        "*://chrome.google.com/*",
+        "*://chromewebstore.google.com/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "version_name": "2.0.0-runpod-serverless-fast-quality-pro-fish-local",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content-scripts/sidebar.css",
+        "ocd-page-capture.js",
+        "sidebar.css",
+        "custom-dub-bridge.js",
+        "voice-samples/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
