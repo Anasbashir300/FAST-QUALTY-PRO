@@ -452,6 +452,12 @@ def build_ytdlp_base_args(referer: str = '', cookie_file: Optional[Path] = None)
         ),
         '--extractor-args', os.environ.get('OCD_YTDLP_EXTRACTOR_ARGS', 'youtube:player_client=default,android,web'),
     ]
+    # Use a JS runtime for YouTube EJS/n-challenge solving.
+    # Deno is recommended upstream, but RunPod build can fail when installing it from deno.land.
+    # This build uses Node.js from apt plus yt-dlp-ejs, and explicitly tells yt-dlp to use node.
+    js_runtime = os.environ.get('OCD_YTDLP_JS_RUNTIME', 'node:/usr/bin/node').strip()
+    if js_runtime:
+        args += ['--js-runtimes', js_runtime]
     if env_bool('OCD_YTDLP_REMOTE_EJS', '1'):
         args += ['--remote-components', os.environ.get('OCD_YTDLP_REMOTE_COMPONENTS', 'ejs:github')]
     if referer:
@@ -483,7 +489,8 @@ def download_input_media_with_ytdlp(url: str, job_dir: Path, start_ts: float, re
         [a for pair in zip(base, base[1:] + ['']) for a in []],
     ]
 
-    # Build clean fallback without --remote-components pair.
+    # Build clean fallback without --remote-components pair. Keep --js-runtimes because
+    # it is needed for YouTube n-challenge solving when Node/yt-dlp-ejs is installed.
     no_remote = []
     skip = False
     for a in base:
@@ -496,8 +503,21 @@ def download_input_media_with_ytdlp(url: str, job_dir: Path, start_ts: float, re
         no_remote.append(a)
     attempts[1] = no_remote + ['-f', format_chain, '-o', out_tpl, url]
 
-    # Broader final fallback.
+    # Legacy fallback for older yt-dlp builds that do not know --js-runtimes.
+    legacy = []
+    skip = False
+    for a in no_remote:
+        if skip:
+            skip = False
+            continue
+        if a == '--js-runtimes':
+            skip = True
+            continue
+        legacy.append(a)
+
+    # Broader final fallbacks.
     attempts.append(no_remote + ['-f', 'bestaudio/best', '-o', out_tpl, url])
+    attempts.append(legacy + ['-f', 'bestaudio/best', '-o', out_tpl, url])
 
     last_error = None
     for idx, args in enumerate(attempts, start=1):

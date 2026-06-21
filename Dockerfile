@@ -22,9 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
-# Deno helps yt-dlp solve YouTube EJS/n-challenges.
-RUN curl -fsSL https://deno.land/install.sh | sh
-ENV PATH="/root/.deno/bin:${PATH}"
+# YouTube extraction needs an external JS runtime for yt-dlp EJS/n-challenges.
+# RunPod builds sometimes fail on the Deno install script, so this image uses apt nodejs
+# plus the Python yt-dlp-ejs package and passes --js-runtimes node:/usr/bin/node.
+ENV OCD_YTDLP_JS_RUNTIME=node:/usr/bin/node \
+    OCD_YTDLP_REMOTE_EJS=1 \
+    OCD_YTDLP_REMOTE_COMPONENTS=ejs:github
 
 WORKDIR /app
 COPY requirements_runpod_serverless.txt /app/requirements_runpod_serverless.txt
@@ -37,6 +40,6 @@ RUN git clone --depth=1 https://github.com/fishaudio/fish-speech.git /opt/fish-s
 
 COPY . /app
 RUN chmod +x /app/start_runpod_worker.sh /app/start_fish_s2_local_server.sh && \
-    python -m py_compile /app/colab_custom_dub_server.py /app/runpod_handler.py
+    python -m py_compile /app/colab_custom_dub_server.py /app/runpod_handler.py /app/handler.py
 
 CMD ["/app/start_runpod_worker.sh"]

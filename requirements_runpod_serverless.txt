@@ -5,6 +5,7 @@ pydantic
 requests
 python-multipart
 yt-dlp
+yt-dlp-ejs
 edge-tts
 openai-whisper
 faster-whisper
