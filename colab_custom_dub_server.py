@@ -30,7 +30,7 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 jobs: Dict[str, Dict[str, Any]] = {}
-OCD_SERVER_FIX_VERSION = '2026-06-21-runpod-serverless-local-fish-s2-pro-only'
+OCD_SERVER_FIX_VERSION = '2026-06-22-runpod-serverless-fish-s2-pro-autostart-health-wait'
 
 # NLLB-200 globals. Lazy-loaded only for Quality/Pro, not for Fast.
 _NLLB_TOKENIZER = None
@@ -452,12 +452,6 @@ def build_ytdlp_base_args(referer: str = '', cookie_file: Optional[Path] = None)
         ),
         '--extractor-args', os.environ.get('OCD_YTDLP_EXTRACTOR_ARGS', 'youtube:player_client=default,android,web'),
     ]
-    # Use a JS runtime for YouTube EJS/n-challenge solving.
-    # Deno is recommended upstream, but RunPod build can fail when installing it from deno.land.
-    # This build uses Node.js from apt plus yt-dlp-ejs, and explicitly tells yt-dlp to use node.
-    js_runtime = os.environ.get('OCD_YTDLP_JS_RUNTIME', 'node:/usr/bin/node').strip()
-    if js_runtime:
-        args += ['--js-runtimes', js_runtime]
     if env_bool('OCD_YTDLP_REMOTE_EJS', '1'):
         args += ['--remote-components', os.environ.get('OCD_YTDLP_REMOTE_COMPONENTS', 'ejs:github')]
     if referer:
@@ -489,8 +483,7 @@ def download_input_media_with_ytdlp(url: str, job_dir: Path, start_ts: float, re
         [a for pair in zip(base, base[1:] + ['']) for a in []],
     ]
 
-    # Build clean fallback without --remote-components pair. Keep --js-runtimes because
-    # it is needed for YouTube n-challenge solving when Node/yt-dlp-ejs is installed.
+    # Build clean fallback without --remote-components pair.
     no_remote = []
     skip = False
     for a in base:
@@ -503,21 +496,8 @@ def download_input_media_with_ytdlp(url: str, job_dir: Path, start_ts: float, re
         no_remote.append(a)
     attempts[1] = no_remote + ['-f', format_chain, '-o', out_tpl, url]
 
-    # Legacy fallback for older yt-dlp builds that do not know --js-runtimes.
-    legacy = []
-    skip = False
-    for a in no_remote:
-        if skip:
-            skip = False
-            continue
-        if a == '--js-runtimes':
-            skip = True
-            continue
-        legacy.append(a)
-
-    # Broader final fallbacks.
+    # Broader final fallback.
     attempts.append(no_remote + ['-f', 'bestaudio/best', '-o', out_tpl, url])
-    attempts.append(legacy + ['-f', 'bestaudio/best', '-o', out_tpl, url])
 
     last_error = None
     for idx, args in enumerate(attempts, start=1):
@@ -1814,6 +1794,74 @@ def _audio_file_to_b64(path: str) -> str:
         return base64.b64encode(f.read()).decode('ascii')
 
 
+
+_FISH_SERVER_PROCESS = None
+_FISH_SERVER_LOCK = threading.Lock()
+
+
+def _fish_health_url() -> str:
+    url = os.environ.get('OCD_FISH_LOCAL_URL', 'http://127.0.0.1:8080/v1/tts').strip()
+    if url.endswith('/v1/tts'):
+        return url[:-len('/v1/tts')] + '/v1/health'
+    return url.rstrip('/') + '/v1/health'
+
+
+def is_fish_server_ready(timeout: float = 2.0) -> bool:
+    try:
+        import requests as _requests
+        r = _requests.get(_fish_health_url(), timeout=timeout)
+        return r.status_code < 500 and 'ok' in (r.text.lower() + str(r.status_code)) or r.status_code == 200
+    except Exception:
+        return False
+
+
+def ensure_fish_local_server_ready() -> None:
+    """Start/wait for the local Fish S2-Pro API server used by Pro mode.
+
+    RunPod Serverless workers can cold-start with only the Python handler alive.
+    This function prevents Pro from failing with Connection refused by starting
+    /app/start_fish_s2_local_server.sh lazily if needed and waiting for /v1/health.
+    """
+    global _FISH_SERVER_PROCESS
+    if is_fish_server_ready(timeout=2.0):
+        return
+
+    if not env_bool('OCD_AUTOSTART_FISH_ON_PRO', '1'):
+        raise RuntimeError(
+            'Fish S2-Pro local server is not reachable and OCD_AUTOSTART_FISH_ON_PRO=0. '
+            'Start Fish local server inside the worker at http://127.0.0.1:8080/v1/tts.'
+        )
+
+    with _FISH_SERVER_LOCK:
+        if is_fish_server_ready(timeout=2.0):
+            return
+        script = os.environ.get('OCD_FISH_START_SCRIPT', '/app/start_fish_s2_local_server.sh')
+        log_path = os.environ.get('OCD_FISH_LOG_PATH', '/tmp/ocd_fish_server.log')
+        if _FISH_SERVER_PROCESS is None or getattr(_FISH_SERVER_PROCESS, 'poll', lambda: 0)() is not None:
+            print(f'[OCD][Fish] Starting local server via {script}; log={log_path}')
+            log_f = open(log_path, 'ab', buffering=0)
+            _FISH_SERVER_PROCESS = subprocess.Popen(['bash', script], stdout=log_f, stderr=subprocess.STDOUT)
+
+    timeout_sec = int(os.environ.get('OCD_FISH_STARTUP_TIMEOUT_SEC', '900'))
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        if is_fish_server_ready(timeout=5.0):
+            print('[OCD][Fish] Local server is ready')
+            return
+        time.sleep(5)
+
+    tail = ''
+    try:
+        log_path = os.environ.get('OCD_FISH_LOG_PATH', '/tmp/ocd_fish_server.log')
+        if Path(log_path).exists():
+            tail = Path(log_path).read_text(errors='ignore')[-5000:]
+    except Exception:
+        pass
+    raise RuntimeError(
+        'Fish S2-Pro local server did not become ready. '
+        'Check /tmp/ocd_fish_server.log inside the RunPod worker. Last log tail:\n' + tail
+    )
+
 def fish_tts_save(text: str, out_path: Path, target_lang: str = 'auto', ref_audio: Optional[str] = None, ref_text: str = '') -> Dict[str, Any]:
     """Generate speech using a LOCAL Fish Audio S2-Pro server only.
 
@@ -1826,18 +1874,15 @@ def fish_tts_save(text: str, out_path: Path, target_lang: str = 'auto', ref_audi
     model_name = str(os.environ.get('OCD_FISH_MODEL', 's2-pro')).strip() or 's2-pro'
     local_url = os.environ.get('OCD_FISH_LOCAL_URL', 'http://127.0.0.1:8080/v1/tts').strip()
     timeout = int(os.environ.get('OCD_FISH_TTS_TIMEOUT', '900'))
-    payload: Dict[str, Any] = {
-        'text': text,
-        'format': 'mp3',
-        'model': model_name,
-    }
-    if target_lang and target_lang != 'auto':
-        payload['language'] = target_lang
+    # Fish local server selects the base model at startup from --llama-checkpoint-path.
+    # Official local API request only needs text and optional reference audio/text.
+    payload: Dict[str, Any] = {'text': text}
     if ref_audio and Path(ref_audio).exists():
         payload['reference_audio'] = _audio_file_to_b64(str(ref_audio))
         if ref_text:
             payload['reference_text'] = ref_text
 
+    ensure_fish_local_server_ready()
     try:
         resp = _requests.post(local_url, json=payload, timeout=timeout)
     except Exception as e:
@@ -2080,7 +2125,7 @@ def process_job(job_id: str, req: DubRequest):
                 # Quality/OmniVoice gets a small volume lift but less than clipping level.
                 convert_tts_to_wav(raw_path, wav_path, float(c['end']) - float(c['start']), volume=float(os.environ.get('OCD_OMNIVOICE_VOLUME', '1.06')))
             elif model == 'pro':
-                raw_path = tts_dir / f'chunk_{i:04d}_fish_raw.mp3'
+                raw_path = tts_dir / f'chunk_{i:04d}_fish_raw.wav'
                 fish_tts_save(text, raw_path, target_lang=target, ref_audio=str(omnivoice_auto_ref_audio) if omnivoice_auto_ref_audio else None, ref_text=job.get('autoCloneRefText', ''))
                 convert_tts_to_wav(raw_path, wav_path, float(c['end']) - float(c['start']), volume=float(os.environ.get('OCD_FISH_VOLUME', '1.04')))
             else:
@@ -2181,7 +2226,7 @@ def health():
         'models': {
             'fast': {'translation': 'google', 'asrEngine': 'openai-whisper', 'whisper': os.environ.get('OCD_FAST_WHISPER_MODEL', 'large'), 'punctuation': 'deepmultilingualpunctuation', 'tts': 'edge-tts'},
             'quality': {'translation': 'nllb200', 'whisper': 'medium', 'tts': 'omnivoice', 'autoClonePerJob': os.environ.get('OCD_OMNIVOICE_AUTO_CLONE', '1'), 'defaultModel': os.environ.get('OCD_OMNIVOICE_MODEL', 'k2-fsa/OmniVoice'), 'stabilityDefaults': {'steps': os.environ.get('OCD_OMNIVOICE_STEPS', '12'), 'speed': os.environ.get('OCD_OMNIVOICE_SPEED', '1.16'), 'maxChars': os.environ.get('OCD_OMNIVOICE_TTS_MAX_CHARS', '190')}},
-            'pro': {'translation': 'nllb200', 'whisper': os.environ.get('OCD_PRO_WHISPER_MODEL', 'turbo'), 'tts': 'fish-speech-s2-pro', 'status': 'enabled-local-only', 'model': os.environ.get('OCD_FISH_MODEL', 's2-pro'), 'mode': 'local-http-only', 'localUrl': os.environ.get('OCD_FISH_LOCAL_URL', 'http://127.0.0.1:8080/v1/tts')},
+            'pro': {'translation': 'nllb200', 'whisper': os.environ.get('OCD_PRO_WHISPER_MODEL', 'turbo'), 'tts': 'fish-speech-s2-pro', 'status': 'enabled-local-only', 'model': os.environ.get('OCD_FISH_MODEL', 's2-pro'), 'mode': 'local-http-only-autostart', 'localUrl': os.environ.get('OCD_FISH_LOCAL_URL', 'http://127.0.0.1:8080/v1/tts'), 'healthUrl': _fish_health_url(), 'ready': is_fish_server_ready(timeout=0.5)},
         },
     }
 

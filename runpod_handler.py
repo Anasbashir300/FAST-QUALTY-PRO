@@ -34,13 +34,15 @@ os.environ.setdefault("OCD_FISH_AUTO_CLONE", "1")
 os.environ.setdefault("OCD_FISH_MODEL", "s2-pro")
 os.environ.setdefault("OCD_FISH_TTS_MODE", "local-http")
 os.environ.setdefault("OCD_FISH_LOCAL_URL", "http://127.0.0.1:8080/v1/tts")
+os.environ.setdefault("OCD_AUTOSTART_FISH_ON_PRO", "1")
+os.environ.setdefault("OCD_FISH_STARTUP_TIMEOUT_SEC", "900")
 os.environ.setdefault("OCD_USE_PUNCTUATION", "1")
 os.environ.setdefault("OCD_TTS_PUNCT_PAUSES", "1")
 os.environ.setdefault("OCD_YTDLP_REMOTE_EJS", "1")
 os.environ.setdefault("OCD_YTDLP_REMOTE_COMPONENTS", "ejs:github")
 
 import runpod  # noqa: E402
-from colab_custom_dub_server import DubRequest, jobs, process_job, health  # noqa: E402
+from colab_custom_dub_server import DubRequest, jobs, process_job, health, is_fish_server_ready, _fish_health_url  # noqa: E402
 
 
 def _read_audio_b64(path: str) -> Dict[str, Any]:
@@ -67,7 +69,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
     if payload.get("health") is True:
         h = health()
         h["serverless"] = True
-        h["fish"] = {"mode": "local-http-only", "localUrl": os.environ.get("OCD_FISH_LOCAL_URL")}
+        h["fish"] = {"mode": "local-http-only-autostart", "localUrl": os.environ.get("OCD_FISH_LOCAL_URL"), "healthUrl": _fish_health_url(), "ready": is_fish_server_ready(timeout=1.0)}
         return h
 
     try:
